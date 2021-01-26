@@ -26,10 +26,10 @@ class ESLoop(BaseESLoop):
             self.debug_mode()
 
         # init offsprings
-        offsprings = self.offspring_strategy.init_offspring(
+        parent, noise, offspring_num = self.offspring_strategy.init_offspring(
             self.network, self.env.get_agent_ids()
         )
-        offsprings = slice_list(offsprings, self.cpu_num)
+        offspring_per_actor = int(offspring_num / self.cpu_num)
 
         prev_reward = float("-inf")
         ep_num = 0
@@ -38,13 +38,20 @@ class ESLoop(BaseESLoop):
             ep_num += 1
 
             # ray.put() offsprings & env
-            offspring_id = ray.put(offsprings)
+            parent_id = ray.put(parent)
+            noise_id = ray.put(noise)
             env_id = ray.put(self.env)
 
             # create an actor by the number of cores
             rolloutworker = self.network.rollout_worker
             actors = [
-                rolloutworker.remote(env_id, offspring_id, worker_id)
+                rolloutworker.remote(
+                    env_id,
+                    parent_id,
+                    noise_id,
+                    worker_id,
+                    offspring_per_actor,
+                )
                 for worker_id in range(self.cpu_num)
             ]
 
@@ -62,24 +69,21 @@ class ESLoop(BaseESLoop):
             rollout_consumed_time = time.time() - rollout_start_time
 
             # Offspring evaluation
-            del offspring_id
+            del parent_id, noise_id, env_id
             eval_start_time = time.time()
-            offsprings, best_reward, curr_sigma = self.offspring_strategy.evaluate(
-                results, offsprings
-            )
-            offsprings = slice_list(offsprings, self.cpu_num)
+            parent, best_reward, noise = self.offspring_strategy.evaluate(results)
             eval_consumed_time = time.time() - eval_start_time
 
             # print log
             consumed_time = time.time() - start_time
             self.logger.info(
-                f"episode: {ep_num}, Best reward: {best_reward:.2f}, sigma: {curr_sigma:.3f}, time: {consumed_time:.2f}, rollout_t: {rollout_consumed_time:.2f}, eval_t: {eval_consumed_time:.2f}"
+                f"episode: {ep_num}, Best reward: {best_reward:.2f}, sigma: {noise[1]:.3f}, time: {consumed_time:.2f}, rollout_t: {rollout_consumed_time:.2f}, eval_t: {eval_consumed_time:.2f}"
             )
 
             prev_reward = best_reward
             save_dir = "saved_models/" + f"ep_{ep_num}/"
             os.makedirs(save_dir)
-            elite_group = self.offspring_strategy.get_elite_models()[0]
+            elite_group = self.offspring_strategy.get_parent_model()
             for k, model in elite_group.items():
                 torch.save(model.state_dict(), save_dir + f"{k}")
 
@@ -88,10 +92,10 @@ class ESLoop(BaseESLoop):
             "You have entered debug mode. Don't forget to detatch ray.remote() of the rollout worker."
         )
         # init offsprings
-        offsprings = self.offspring_strategy.init_offspring(
+        parent, noise, offspring_num = self.offspring_strategy.init_offspring(
             self.network, self.env.get_agent_ids()
         )
-        offsprings = slice_list(offsprings, self.cpu_num)
+        offspring_per_actor = int(offspring_num / self.cpu_num)
 
         ep_num = 0
         # start rollout
@@ -101,20 +105,19 @@ class ESLoop(BaseESLoop):
 
             rollout_start_time = time.time()
             rollout_worker = self.network.rollout_worker
-            rollout_worker = rollout_worker(self.env, offsprings, 0)
+            rollout_worker = rollout_worker(
+                self.env, parent, noise, 0, offspring_per_actor
+            )
             results = rollout_worker.rollout()
             rollout_consumed_time = time.time() - rollout_start_time
 
             # Offspring evaluation
             eval_start_time = time.time()
-            offsprings, best_reward, curr_sigma = self.offspring_strategy.evaluate(
-                results, offsprings
-            )
-            offsprings = slice_list(offsprings, self.cpu_num)
+            parent, best_reward, noise = self.offspring_strategy.evaluate(results)
             eval_consumed_time = time.time() - eval_start_time
 
             # print log
             consumed_time = time.time() - start_time
             self.logger.info(
-                f"episode: {ep_num}, Best reward: {best_reward:.2f}, sigma: {curr_sigma:.3f}, time: {consumed_time:.2f}, rollout_t: {rollout_consumed_time:.2f}, eval_t: {eval_consumed_time:.2f}"
+                f"episode: {ep_num}, Best reward: {best_reward:.2f}, sigma: {noise[1]:.3f}, time: {consumed_time:.2f}, rollout_t: {rollout_consumed_time:.2f}, eval_t: {eval_consumed_time:.2f}"
             )

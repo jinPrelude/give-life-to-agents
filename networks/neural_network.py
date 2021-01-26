@@ -67,6 +67,11 @@ class GymEnvModel(BaseRNNNetwork):
     def init_hidden(self):
         return torch.zeros([1, 1, 32 + self.num_action], dtype=torch.float)
 
-    def init_weights(self, mu=0, sigma=1):
+    def init_weights(self, mu, sigma):
         for param in self.parameters():
             nn.init.normal_(param, mu, sigma)
+
+    def add_noise(self, mu, sigma):
+        with torch.no_grad():
+            for param in self.parameters():
+                param += torch.normal(mu, sigma, size=param.size())

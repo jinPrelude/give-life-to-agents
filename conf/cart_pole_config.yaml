@@ -5,13 +5,13 @@ learning_strategy:
     elite_ratio: 0.1
     init_sigma: 2
     sigma_decay: 0.999
-    offspring_num: 330
+    offspring_num: 70
   env: 
     _target_: envs.gym_wrapper.GymWrapper
-    env_name: LunarLander-v2
-    max_step: 300
+    env_name: CartPole-v0
+    max_step: 200
   network:
     _target_: networks.neural_network.GymEnvModel
-    num_state: 8
-    num_action: 4
-  cpu_num: 11
+    num_state: 4
+    num_action: 2
+  cpu_num: 7

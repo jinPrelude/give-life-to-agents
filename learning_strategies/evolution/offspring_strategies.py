@@ -1,3 +1,4 @@
+import math
 from copy import deepcopy
 
 import torch
@@ -6,60 +7,56 @@ from .abstracts import BaseOffspringStrategy
 
 
 class simple_gaussian_offspring(BaseOffspringStrategy):
-    def __init__(self, init_sigma, sigma_decay, elite_ratio, group_num):
-        super(simple_gaussian_offspring, self).__init__(elite_ratio, group_num)
+    def __init__(self, elite_ratio, init_sigma, sigma_decay, offspring_num):
+        self.elite_ratio = elite_ratio
         self.init_sigma = init_sigma
         self.sigma_decay = sigma_decay
+        self.parent_model = None
+        self.offspring_num = offspring_num
 
+        self.elite_num = max(int(offspring_num * elite_ratio), 1)
+        self.mu = 0
         self.curr_sigma = self.init_sigma
-        self.elite_num = max(1, int(group_num * elite_ratio))
 
-    @staticmethod
-    def _gen_mutation(group: dict, sigma: object, group_num: int):
-        offsprings_group = []
-        for _ in range(group_num):
-            agent_group = {}
-            for agent_id, agent in group.items():
-                tmp_agent = deepcopy(agent)
-                for param in tmp_agent.parameters():
-                    with torch.no_grad():
-                        noise = torch.normal(0, sigma, size=param.size())
-                        param.add_(noise)
+        _weight_denominator = sum(
+            math.log(offspring_num + 0.5) - math.log(i)
+            for i in range(1, offspring_num + 1)
+        )
+        self.weight = [
+            (math.log(offspring_num + 0.5) - math.log(i)) / _weight_denominator
+            for i in range(1, offspring_num + 1)
+        ]
 
-                agent_group[agent_id] = tmp_agent
-            offsprings_group.append(agent_group)
-        return offsprings_group
-
-    def _gen_offsprings(self):
-        offspring_array = []
-        for p in self.elite_models:
-            offspring_array.append(p)
-            offspring_array[0:0] = self._gen_mutation(
-                p,
-                sigma=self.curr_sigma,
-                group_num=(self.group_num // self.elite_num) - 1,
-            )
-        return offspring_array
-
-    def get_elite_models(self):
-        return self.elite_models
+    def get_parent_model(self):
+        return self.parent_model
 
     def init_offspring(self, network, agent_ids):
         network.init_weights(0, 1e-7)
-        for _ in range(self.elite_num):
-            group = {}
-            for agent_id in agent_ids:
-                group[agent_id] = network
-            self.elite_models.append(group)
-        return self._gen_offsprings()
+        parent = {}
+        for agent_id in agent_ids:
+            parent[agent_id] = network
+        self.parent_model = parent
+        return self.parent_model, (self.mu, self.curr_sigma), self.offspring_num
 
-    def evaluate(self, result, offsprings):
-        results = sorted(result, key=lambda l: l[1], reverse=True)
-        best_reward = results[0][1]
-        elite_ids = results[: self.elite_num]
-        self.elite_models = []
-        for id in elite_ids:
-            self.elite_models.append(offsprings[id[0][0]][id[0][1]])
-        offsprings = self._gen_offsprings()
+    def evaluate(self, results):
+        results = sorted(results, key=lambda l: l[1], reverse=True)
+        elite_group = results[: self.elite_num]
+        parent, parent_reward = elite_group[0]
+        with torch.no_grad():
+            # best agent as parent
+            for _, model in parent.items():
+                for param in model.parameters():
+                    param *= self.weight[0]
+            # weighted sum elite
+            for i, elite in enumerate(elite_group[1:]):
+                for k, models in elite[0].items():
+                    for param in model.parameters():
+                        param *= self.weight[1 + i]
+                for k in parent.keys():
+                    for parent_p, elite_p in zip(
+                        parent[k].parameters(), elite[0][k].parameters()
+                    ):
+                        parent_p += elite_p
+        self.parent_model = parent
         self.curr_sigma *= self.sigma_decay
-        return offsprings, best_reward, self.curr_sigma
+        return self.parent_model, parent_reward, (self.mu, self.curr_sigma)
